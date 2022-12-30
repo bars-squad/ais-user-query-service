@@ -6,6 +6,7 @@ type Responses interface {
 	CodeProperty() int
 	MessageProperty() string
 	PaginationProperty() interface{}
+	ErrorProperty() error
 }
 
 // We can use this internal response to wrap response
@@ -15,6 +16,7 @@ type ResponsesImpl struct {
 	Data       interface{} `json:"data"`
 	Message    string      `json:"message"`
 	Pagination interface{} `json:"pagination,omitempty"`
+	Error      error       `json:"error,omitempty"`
 }
 
 func (hrsci *HttpResponseStatusCodesImpl) NewResponses(data any, message string) Responses {
@@ -49,4 +51,9 @@ func (r *ResponsesImpl) MessageProperty() string {
 // PaginationProperty returns pagination.
 func (r *ResponsesImpl) PaginationProperty() interface{} {
 	return r.Pagination
+}
+
+// ErrorProperty returns pagination.
+func (r *ResponsesImpl) ErrorProperty() error {
+	return r.Error
 }
