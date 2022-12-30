@@ -1,13 +1,11 @@
 package admin
 
 import (
-	"encoding/json"
 	"net/http"
+	"strconv"
 
-	"github.com/difaal21/go-template/helpers/validation"
-	"github.com/difaal21/go-template/middleware"
-	"github.com/difaal21/go-template/model"
-	"github.com/difaal21/go-template/responses"
+	"github.com/bars-squad/ais-user-query-service/middleware"
+	"github.com/bars-squad/ais-user-query-service/responses"
 	"github.com/go-playground/validator"
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
@@ -29,76 +27,30 @@ type HTTPHandler struct {
 	Usecase  Usecase
 }
 
-func NewHTTPHandler(logger *logrus.Logger, validate *validator.Validate, router *mux.Router, basicAuth middleware.RouteMiddleware, usecase Usecase, sess middleware.RouteMiddleware) {
+func NewHTTPHandler(logger *logrus.Logger, validate *validator.Validate, router *mux.Router, basicAuth middleware.RouteMiddleware, usecase Usecase) {
+
 	handler := &HTTPHandler{
 		Logger:   logger,
 		Validate: validate,
 		Usecase:  usecase,
 	}
 
-	router.HandleFunc("/v1/admin/login", basicAuth.Verify(handler.Login)).Methods(http.MethodPost)
-	router.HandleFunc("/v1/admin/registration", sess.Verify(handler.Register)).Methods(http.MethodPost)
+	router.HandleFunc("/v1/admin/registration", basicAuth.Verify(handler.GetListAccount)).Methods(http.MethodGet)
 	// router.HandleFunc("/mpv-general-registration/v1/users/registration/{nationalityId}", basicAuth.Verify(handler.GetUser)).Methods(http.MethodGet)
 	// router.HandleFunc("/mpv-general-registration/v1/users/registration/{nationalityId}/subsidy-product/{subsidyProduct}", basicAuth.Verify(handler.GetUserByNationalityIDAndSubsidyProduct)).Methods(http.MethodGet)
 }
 
-func (handler *HTTPHandler) Login(w http.ResponseWriter, r *http.Request) {
-	var payload *model.AdminLogin
+func (handler *HTTPHandler) GetListAccount(w http.ResponseWriter, r *http.Request) {
 
+	var resp responses.Responses
 	ctx := r.Context()
-	defer func() {
-		r := recover()
-		if r != nil {
-			handler.Logger.Error(r)
-			responses.REST(w, httpResponse.InternalServerError("").NewResponses(nil, internalServerErrorMessage))
-		}
-	}()
 
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		responses.REST(w, httpResponse.UnprocessableEntity("").NewResponses(nil, err.Error()))
-		return
-	}
+	queryString := r.URL.Query()
+	cursorQS := queryString.Get("cursor")
+	actionQS := queryString.Get("action")
+	sizeQS := queryString.Get("size")
+	size, _ := strconv.Atoi(sizeQS)
 
-	if err := validation.RequestBody(handler.Validate, payload); err != nil {
-		responses.REST(w, httpResponse.BadRequest("").NewResponses(err, badRequestMessage))
-		return
-	}
-
-	resp := handler.Usecase.Login(ctx, payload)
-	responses.REST(w, resp)
-}
-
-func (handler *HTTPHandler) Register(w http.ResponseWriter, r *http.Request) {
-	var payload *model.AdminRegistration
-
-	ctx := r.Context()
-	defer func() {
-		r := recover()
-		if r != nil {
-			handler.Logger.Error(r)
-			responses.REST(w, httpResponse.InternalServerError("").NewResponses(nil, internalServerErrorMessage))
-		}
-	}()
-
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		responses.REST(w, httpResponse.UnprocessableEntity("").NewResponses(nil, err.Error()))
-		return
-	}
-
-	if err := validation.RequestBody(handler.Validate, payload); err != nil {
-		responses.REST(w, httpResponse.BadRequest("").NewResponses(err, badRequestMessage))
-		return
-	}
-
-	var role, err = RoleValidation(payload.Role)
-	if err != nil {
-		payload.Role = role.String()
-
-		handler.Logger.Error(err)
-		responses.REST(w, httpResponse.Forbidden("").NewResponses(nil, err.Error()))
-		return
-	}
-
-	resp := handler.Usecase.Register(ctx, payload)
+	resp = handler.Usecase.GetListAccount(ctx, size, actionQS, cursorQS)
 	responses.REST(w, resp)
 }
