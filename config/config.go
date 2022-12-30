@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Shopify/sarama"
+	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/sirupsen/logrus"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -28,6 +30,11 @@ type Config struct {
 	Mongodb struct {
 		ClientOptions *options.ClientOptions
 		Database      string
+	}
+	Elasticsearch elasticsearch.Config
+	SaramaKafka   struct {
+		Addresses []string
+		Config    *sarama.Config
 	}
 }
 
@@ -95,11 +102,54 @@ func (cfg *Config) app() {
 	cfg.Application.AllowedOrigins = allowedOrigins
 }
 
+func (cfg *Config) elasticsearch() {
+	hosts := strings.Split(os.Getenv("ELASTICSEARCH_HOSTS"), ",")
+	user := os.Getenv("ELASTICSEARCH_USERNAME")
+	pass := os.Getenv("ELASTICSEARCH_PASSWORD")
+
+	config := elasticsearch.Config{}
+	// config.Transport = apmelasticsearch.WrapRoundTripper(http.DefaultTransport)
+
+	config.Addresses = hosts
+	config.Username = user
+	config.Password = pass
+
+	cfg.Elasticsearch = config
+}
+
+func (cfg *Config) sarama() {
+	brokers := os.Getenv("KAFKA_BROKERS")
+	sslEnable, _ := strconv.ParseBool(os.Getenv("KAFKA_SSL_ENABLE"))
+	username := os.Getenv("KAFKA_USERNAME")
+	password := os.Getenv("KAFKA_PASSWORD")
+
+	sc := sarama.NewConfig()
+	sc.Version = sarama.V2_1_0_0
+	if username != "" {
+		sc.Net.SASL.User = username
+		sc.Net.SASL.Password = password
+		sc.Net.SASL.Enable = true
+	}
+	sc.Net.TLS.Enable = sslEnable
+
+	// consumer config
+	sc.Consumer.Group.Rebalance.Strategy = sarama.BalanceStrategyRoundRobin
+	sc.Consumer.Offsets.Initial = sarama.OffsetOldest
+
+	// producer config
+	sc.Producer.Retry.Backoff = time.Millisecond * 500
+
+	cfg.SaramaKafka.Addresses = strings.Split(brokers, ",")
+	cfg.SaramaKafka.Config = sc
+}
+
 func Load() *Config {
 	cfg := new(Config)
 	cfg.app()
 	cfg.basicAuth()
 	cfg.logFormatter()
 	cfg.mongodb()
+	cfg.elasticsearch()
+	cfg.sarama()
 	return cfg
 }
