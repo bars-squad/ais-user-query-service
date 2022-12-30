@@ -7,19 +7,20 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/difaal21/go-template/config"
-	"github.com/difaal21/go-template/databases/mongodb"
-	"github.com/difaal21/go-template/jwt"
-	"github.com/difaal21/go-template/middleware"
-	"github.com/difaal21/go-template/modules/admin"
-	"github.com/difaal21/go-template/responses"
-	"github.com/difaal21/go-template/server"
+	"github.com/Shopify/sarama"
+	"github.com/bars-squad/ais-user-query-service/config"
+	es "github.com/bars-squad/ais-user-query-service/databases/elasticsearch"
+	"github.com/bars-squad/ais-user-query-service/jwt"
+	"github.com/bars-squad/ais-user-query-service/middleware"
+	"github.com/bars-squad/ais-user-query-service/modules/admin"
+	"github.com/bars-squad/ais-user-query-service/pubsub"
+	"github.com/bars-squad/ais-user-query-service/responses"
+	"github.com/bars-squad/ais-user-query-service/server"
 	"github.com/go-playground/validator"
 	"github.com/gorilla/mux"
 	_ "github.com/joho/godotenv/autoload" //for development
 	"github.com/rs/cors"
 	"github.com/sirupsen/logrus"
-	"go.mongodb.org/mongo-driver/mongo"
 )
 
 var (
@@ -27,6 +28,10 @@ var (
 	httpResponse        = responses.HttpResponseStatusCodesImpl{}
 	healthCheckMessage  = "Application running properly"
 	pageNotFoundMessage = "You're lost, double check the endpoint"
+)
+
+const (
+	createdAdministratorTopic = "ais-user.administrator"
 )
 
 func init() {
@@ -40,17 +45,23 @@ func main() {
 
 	validate := validator.New()
 
-	mongoClient, err := mongo.NewClient(cfg.Mongodb.ClientOptions)
+	// set elasctisearch
+	esClient, err := es.NewClientAdapter().Connect(context.Background(), logger)
 	if err != nil {
 		logger.Fatal(err)
 	}
-	mongoClientAdapter := mongodb.NewClientAdapter(mongoClient)
-	if err := mongoClientAdapter.Connect(context.Background()); err != nil {
+
+	// set publisher object
+	saramaAsyncProducer, err := sarama.NewAsyncProducer(
+		cfg.SaramaKafka.Addresses,
+		cfg.SaramaKafka.Config,
+	)
+	if err != nil {
 		logger.Fatal(err)
 	}
-
-	// set mongodb
-	mongodb := mongoClientAdapter.Database(cfg.Mongodb.Database)
+	publisher := pubsub.NewSaramaKafkaProducerAdapter(logger, &pubsub.SaramaKafkaProducerAdapterConfig{
+		AsyncProducer: saramaAsyncProducer,
+	})
 
 	// set jwt object
 	privateKey := jwt.GetRSAPrivateKey("./secret/private.pem")
@@ -60,14 +71,12 @@ func main() {
 	// set basic auth
 	basicAuth := middleware.NewBasicAuth(cfg.BasicAuth.Username, cfg.BasicAuth.Password)
 
-	sessionMiddleware := middleware.NewSessionMiddleware(jsonWebToken)
-
 	router := mux.NewRouter()
 	router.HandleFunc("/", index)
 	// http.Handle("/", router)
 	router.NotFoundHandler = http.HandlerFunc(notFoundHandler)
 
-	adminRepository := admin.NewRepository(logger, mongodb)
+	adminRepository := admin.NewRepository(logger, esClient)
 
 	adminUsecase := admin.NewUsecase(&admin.Property{
 		ServiceName:  cfg.Application.Name,
@@ -78,7 +87,21 @@ func main() {
 		// Publisher:                publisher,
 	})
 
-	admin.NewHTTPHandler(logger, validate, router, basicAuth, adminUsecase, sessionMiddleware)
+	admin.NewHTTPHandler(logger, validate, router, basicAuth, adminUsecase)
+
+	createdAccountEventHandler := admin.NewCreatedAdministratorEventHandler(logger, validate, adminUsecase)
+	createdAccountConsumerHandler := pubsub.NewDefaultSaramaConsumerGroupHandler(cfg.Application.Name, createdAccountEventHandler, nil)
+
+	updatedTPUserSubcriber, err := pubsub.NewSaramaKafkaConsumerGroupFullConfigAdapter(
+		logger, cfg.SaramaKafka.Addresses, cfg.Application.Name, []string{createdAdministratorTopic},
+		createdAccountConsumerHandler, cfg.SaramaKafka.Config,
+	)
+
+	if err != nil {
+		logger.Fatal(err)
+	}
+
+	updatedTPUserSubcriber.Subscribe()
 
 	handler := cors.New(cors.Options{
 		AllowedOrigins:   cfg.Application.AllowedOrigins,
@@ -97,9 +120,7 @@ func main() {
 
 	// closing service for a gracefull shutdown.
 	server.Close()
-	// redis.Close()
-	// db.Close()
-	// publisher.Close()
+	publisher.Close()
 }
 
 func index(w http.ResponseWriter, r *http.Request) {
